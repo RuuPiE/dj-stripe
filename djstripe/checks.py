@@ -19,20 +19,20 @@ from django.utils.dateparse import date_re
 @checks.register("djstripe")
 def check_stripe_api_key(app_configs=None, **kwargs):
     """Check the user has configured API live/test keys correctly."""
-    from . import settings as djstripe_settings
+    from . import settings as settings
     messages = []
 
-    if not djstripe_settings.STRIPE_SECRET_KEY:
+    if not settings.STRIPE_SECRET_KEY:
         msg = "Could not find a Stripe API key."
         hint = "Add STRIPE_TEST_SECRET_KEY and STRIPE_LIVE_SECRET_KEY to your settings."
         messages.append(checks.Critical(msg, hint=hint, id="djstripe.C001"))
-    elif djstripe_settings.STRIPE_LIVE_MODE:
-        if not djstripe_settings.LIVE_API_KEY.startswith("sk_live_"):
+    elif settings.STRIPE_LIVE_MODE:
+        if not settings.LIVE_API_KEY.startswith("sk_live_"):
             msg = "Bad Stripe live API key."
             hint = 'STRIPE_LIVE_SECRET_KEY should start with "sk_live_"'
             messages.append(checks.Critical(msg, hint=hint, id="djstripe.C002"))
     else:
-        if not djstripe_settings.TEST_API_KEY.startswith("sk_test_"):
+        if not settings.TEST_API_KEY.startswith("sk_test_"):
             msg = "Bad Stripe test API key."
             hint = 'STRIPE_TEST_SECRET_KEY should start with "sk_test_"'
             messages.append(checks.Critical(msg, hint=hint, id="djstripe.C003"))
@@ -56,10 +56,10 @@ def validate_stripe_api_version(version):
 @checks.register("djstripe")
 def check_stripe_api_version(app_configs=None, **kwargs):
     """Check the user has configured API version correctly."""
-    from . import settings as djstripe_settings
+    from . import settings as settings
     messages = []
-    default_version = djstripe_settings.DEFAULT_STRIPE_API_VERSION
-    version = djstripe_settings.get_stripe_api_version()
+    default_version = settings.DEFAULT_STRIPE_API_VERSION
+    version = settings.get_stripe_api_version()
 
     if not validate_stripe_api_version(version):
         msg = "Invalid Stripe API version: {}".format(version)
@@ -83,12 +83,12 @@ def check_native_jsonfield_postgres_engine(app_configs=None, **kwargs):
     """
     Check that the DJSTRIPE_USE_NATIVE_JSONFIELD isn't set unless Postgres is in use.
     """
-    from . import settings as djstripe_settings
+    from . import settings as settings
 
     messages = []
     error_msg = "DJSTRIPE_USE_NATIVE_JSONFIELD is not compatible with engine {engine} for database {name}"
 
-    if djstripe_settings.USE_NATIVE_JSONFIELD:
+    if settings.USE_NATIVE_JSONFIELD:
         for db_name, db_config in settings.DATABASES.items():
             # Hi there.
             # You may be reading this because you are using Postgres, but
