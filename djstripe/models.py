@@ -31,6 +31,8 @@ from stripe.error import StripeError, InvalidRequestError
 
 import traceback as exception_traceback
 
+from managers import SepaSourceManager
+from stripe_objects import StripeSepaSource
 from . import settings as djstripe_settings
 from . import webhooks
 from .enums import SourceType, SubscriptionStatus
@@ -44,7 +46,6 @@ from .stripe_objects import (
     StripeSubscription, StripeTransfer
 )
 from .utils import get_friendly_currency_amount, QuerySetMock
-
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class Charge(StripeCharge):
         "Transfer",
         null=True, on_delete=models.CASCADE,
         help_text="The transfer to the destination account (only applicable if the charge was created using the "
-        "destination parameter)."
+                  "destination parameter)."
     )
 
     source = ForeignKey(
@@ -440,16 +441,25 @@ Use ``Customer.sources`` and ``Customer.subscriptions`` to access them.
         # Have to create sources before we handle the default_source
         if data["sources"]:
             for source in data["sources"]["data"]:
-                if not isinstance(source, dict) or source.get("object") == SourceType.card:
+                if not isinstance(source, dict):
+                    continue
+                if source.get("object") == SourceType.card:
                     Card._get_or_create_from_stripe_object(source)
+                elif source.get("object") == 'source' and source.get("type") == SourceType.sepa_debit:
+                    SepaSource._get_or_create_from_stripe_object(source)
                 else:
                     logger.warning("Unsupported source type on %r: %r", self, source)
 
         default_source = data.get("default_source")
         if default_source:
             # TODO: other sources
-            if not isinstance(default_source, dict) or default_source.get("object") == SourceType.card:
+            if isinstance(default_source, dict) and default_source.get("object") == SourceType.card:
                 source, created = Card._get_or_create_from_stripe_object(data, "default_source", refetch=False)
+            elif (
+                isinstance(default_source, dict)
+                    and default_source.get("object") == 'source'
+                    and source.get("type") == SourceType.sepa_debit):
+                source, created = SepaSource._get_or_create_from_stripe_object(data, "default_source", refetch=False)
             else:
                 logger.warning("Unsupported source type on %r: %r", self, default_source)
                 source = None
@@ -518,14 +528,14 @@ class Event(StripeEvent):
     valid = NullBooleanField(
         null=True,
         help_text="Tri-state bool. Null == validity not yet confirmed. Otherwise, this field indicates that this "
-        "event was checked via stripe api and found to be either authentic (valid=True) or in-authentic (possibly "
-        "malicious)"
+                  "event was checked via stripe api and found to be either authentic (valid=True) or in-authentic (possibly "
+                  "malicious)"
     )
 
     processed = BooleanField(
         default=False,
         help_text="If validity is performed, webhook event processor(s) may run to take further action on the event. "
-        "Once these have run, this is set to True."
+                  "Once these have run, this is set to True."
     )
 
     @property
@@ -693,6 +703,21 @@ class Card(StripeCard):
             pass
 
 
+@class_doc_inherit
+class SepaSource(StripeSepaSource):
+    __doc__ = getattr(StripeSepaSource, "__doc__")
+
+    def _attach_objects_hook(self, cls, data):
+        customer = data.get('customer')
+        customer = customer if isinstance(customer, Customer) else cls._stripe_object_to_customer(target_cls=Customer, data=data)
+        if customer:
+            self.customer = customer
+        else:
+            raise ValidationError("A customer was not attached to this source.")
+
+    objects = SepaSourceManager()
+
+
 # ============================================================================ #
 #                                Subscriptions                                 #
 # ============================================================================ #
@@ -855,7 +880,7 @@ class InvoiceItem(StripeInvoiceItem):
         related_name="invoiceitems",
         on_delete=SET_NULL,
         help_text="If the invoice item is a proration, the plan of the subscription for which the proration was "
-        "computed."
+                  "computed."
     )
     subscription = ForeignKey(
         "Subscription",
@@ -911,7 +936,7 @@ class Plan(StripePlan):
         # A few minor things are changed in the api-version of the create call
         api_kwargs = dict(kwargs)
         api_kwargs['id'] = api_kwargs['stripe_id']
-        del(api_kwargs['stripe_id'])
+        del (api_kwargs['stripe_id'])
         api_kwargs['amount'] = int(api_kwargs['amount'] * 100)
         cls._api_create(**api_kwargs)
 

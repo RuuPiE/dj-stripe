@@ -11,6 +11,7 @@ from __future__ import unicode_literals
 import decimal
 
 from django.db import models
+from polymorphic.managers import PolymorphicManager
 
 
 class StripeObjectManager(models.Manager):
@@ -92,3 +93,18 @@ class ChargeManager(models.Manager):
             total_fee=models.Sum("fee"),
             total_refunded=models.Sum("amount_refunded")
         )
+
+
+class SepaSourceManager(PolymorphicManager):
+    """ Manager used by models.SepaSource."""
+
+    def create_from_stripe(self, stripe_data, customer):
+        """
+        :param stripe_data: dict with raw data decoded from stripe api json
+        :param customer: optional, should not be needed when doing customer.sepa_source_set.create()
+        :return: newly created SepaSource instance
+        """
+        from stripe_objects import StripeSepaSource
+        data = StripeSepaSource.stripe_object_to_record(stripe_data)
+        data['customer'] = customer
+        return self.create(**data)

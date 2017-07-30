@@ -13,8 +13,8 @@ from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
-from .settings import USE_NATIVE_JSONFIELD
 from .utils import convert_tstamp, dict_nested_accessor
+from .settings import USE_NATIVE_JSONFIELD
 
 if USE_NATIVE_JSONFIELD:
     from django.contrib.postgres.fields import JSONField
@@ -150,6 +150,12 @@ class StripeNullBooleanField(StripeFieldMixin, models.NullBooleanField):
 
 class StripeCharField(StripeFieldMixin, models.CharField):
     """A field used to define a CharField value according to djstripe logic."""
+
+    pass
+
+
+class StripeURLField(StripeFieldMixin, models.URLField):
+    """A field used to define a URLField value according to djstripe logic."""
 
     pass
 

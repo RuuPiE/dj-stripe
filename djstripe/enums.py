@@ -137,6 +137,7 @@ class PlanInterval(Enum):
 
 class SourceType(Enum):
     card = _("Card")
+    sepa_debit = _("Sepa Debit")
     bank_account = _("Bank account")
     bitcoin_receiver = _("Bitcoin receiver")
     alipay_account = _("Alipay account")
