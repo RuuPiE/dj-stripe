@@ -156,6 +156,12 @@ class StripeCharField(StripeFieldMixin, models.CharField):
     pass
 
 
+class StripeURLField(StripeFieldMixin, models.URLField):
+    """A field used to define a URLField value according to djstripe logic."""
+
+    pass
+
+
 class StripeIdField(StripeCharField):
     """A field with enough space to hold any stripe ID."""
 
