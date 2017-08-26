@@ -10,6 +10,7 @@
 """
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+from django.db.models import Count
 from django.contrib import admin
 
 from .models import (
@@ -93,6 +94,10 @@ class CustomerSubscriptionStatusListFilter(admin.SimpleListFilter):
         """
         if self.value() is None:
             return queryset.all()
+        if self.value() == 'none':
+            return queryset.filter(subscriptions=None).distinct()
+        elif self.value() == '[multiple]':
+            return queryset.annotate(num_subscriptions=Count('subscriptions')).filter(num_subscriptions__gt=1).distinct()
         else:
             return queryset.filter(subscriptions__status=self.value()).distinct()
 
@@ -181,8 +186,11 @@ def subscription_status(customer):
 
     If the customer does not have a subscription, an empty string is returned.
     """
-    if customer.subscription:
+    subscription_count = customer.subscriptions.count()
+    if subscription_count == 1:
         return customer.subscription.status
+    elif subscription_count > 1:
+        return u'%i subscriptions' % subscription_count
     else:
         return ""
 
