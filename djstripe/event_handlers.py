@@ -121,10 +121,12 @@ def customer_source_webhook_handler(event):
     if source_type == SourceType.card:
         _handle_crud_like_event(
             target_cls=Card,
+            event=event
         )
     elif source_type == SourceType.sepa_debit:
         _handle_crud_like_event(
             target_cls=SepaSource,
+            event=event
         )
 
 
