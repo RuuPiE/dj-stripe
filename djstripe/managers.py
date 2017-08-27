@@ -104,7 +104,6 @@ class SepaSourceManager(PolymorphicManager):
         :param customer: optional, should not be needed when doing customer.sepa_source_set.create()
         :return: newly created SepaSource instance
         """
-        from stripe_objects import StripeSepaSource
-        data = StripeSepaSource.stripe_object_to_record(stripe_data)
+        data = self.model._stripe_object_to_record(stripe_data)
         data['customer'] = customer
         return self.create(**data)
