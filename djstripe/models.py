@@ -1598,6 +1598,15 @@ class StripeSource(PolymorphicModel, StripeObject):
 
         return customer, kwargs
 
+    @property
+    def is_default(self):
+        """
+        :return: True if this instance is customer's default_source
+        """
+        if not self.customer:
+            return False
+        return self == self.customer.default_source
+
     def api_retrieve(self, api_key=None):
         # OVERRIDING the parent version of this function
         # Cards must be manipulated through a customer or account.
