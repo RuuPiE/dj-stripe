@@ -515,14 +515,14 @@ class Charge(StripeObject):
         null=True,
         help_text="Message to user further explaining reason for charge failure if available."
     )
-    fraud_details = StripeJSONField(help_text="Hash with information on fraud assessments for the charge.")
+    fraud_details = StripeJSONField(default={}, help_text="Hash with information on fraud assessments for the charge.")
     invoice = ForeignKey(
         "Invoice", on_delete=models.CASCADE, null=True,
         related_name="charges",
         help_text="The invoice this charge is for if one exists."
     )
     # TODO: on_behalf_of, order
-    outcome = StripeJSONField(help_text="Details about whether or not the payment was accepted, and why.")
+    outcome = StripeJSONField(default={}, help_text="Details about whether or not the payment was accepted, and why.")
     paid = StripeBooleanField(
         default=False,
         help_text="True if the charge succeeded, or was successfully authorized for later capture, False otherwise."
@@ -1143,15 +1143,20 @@ class Customer(StripeObject):
 
         return self.has_valid_source() and self.date_purged is None
 
-    def send_invoice(self, source=None, tax_percent=None):
+    def send_invoice(self, source=None, tax_percent=None, **kwargs):
         """
         Pay and send the customer's latest invoice.
 
         :returns: True if an invoice was able to be created and paid, False otherwise
                   (typically if there was nothing to invoice).
         """
+
+        kwargs = kwargs.copy()
+        if tax_percent is not None:
+            kwargs['tax_percent'] = tax_percent
+
         try:
-            invoice = Invoice._api_create(customer=self.stripe_id, tax_percent=tax_percent)
+            invoice = Invoice._api_create(customer=self.stripe_id, **kwargs)
             if isinstance(source, SepaSource):
                 invoice.pay(source=source)
             else:
