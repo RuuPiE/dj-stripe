@@ -154,7 +154,7 @@ def sync_plans(apps, schema_editor):
             try:
                 Plan.sync_from_stripe_data(plan)
             except InvalidRequestError:
-                tqdm.write("There was an error while syncing plan ({plan_id}).".format(transfer_id=plan.stripe_id))
+                tqdm.write("There was an error while syncing plan ({plan_id}).".format(plan_id=plan.stripe_id))
 
         print("Transfer sync complete.")
 
