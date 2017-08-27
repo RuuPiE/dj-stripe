@@ -21,10 +21,11 @@ from datetime import timedelta
 import stripe
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, IntegrityError
 from django.db.models.deletion import SET_NULL
 from django.db.models.fields import BooleanField, CharField, DateTimeField, NullBooleanField, TextField, UUIDField
 from django.db.models.fields.related import ForeignKey, OneToOneField
+from django.db.utils import IntegrityError
 from django.utils import dateformat, six, timezone
 from django.utils.encoding import python_2_unicode_compatible, smart_text
 from django.utils.functional import cached_property
@@ -48,7 +49,6 @@ from .signals import WEBHOOK_SIGNALS, webhook_processing_error
 from .utils import QuerySetMock, get_friendly_currency_amount
 
 logger = logging.getLogger(__name__)
-
 # Override the default API version used by the Stripe library.
 djstripe_settings.set_stripe_api_version()
 
@@ -251,7 +251,11 @@ class StripeObject(models.Model):
         instance._attach_objects_hook(cls, data)
 
         if save:
-            instance.save()
+            try:
+                instance.save()
+            except IntegrityError as e:
+                logger.error('IntegrityError: %s\ncls: %s\ndata: %s' % (e, cls, data))
+                return instance
 
         instance._attach_objects_post_save_hook(cls, data)
 
