@@ -24,8 +24,13 @@ import logging
 
 from . import webhooks
 from .enums import SourceType
-from .models import Card, Charge, Coupon, Customer, Invoice, InvoiceItem, Plan, Subscription, Transfer
+from .models import (
+    Card, Charge, Coupon, Customer, Invoice, InvoiceItem, Plan, Subscription,
+    Transfer, SepaSource
+)
 from .utils import convert_tstamp
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -114,7 +119,13 @@ def customer_source_webhook_handler(event):
 
     # TODO: handle other types of sources (https://stripe.com/docs/api#customer_object-sources)
     if source_type == SourceType.card:
-        _handle_crud_like_event(target_cls=Card, event=event)
+        _handle_crud_like_event(
+            target_cls=Card,
+        )
+    elif source_type == SourceType.sepa_debit:
+        _handle_crud_like_event(
+            target_cls=SepaSource,
+        )
 
 
 @webhooks.handler("customer.subscription")

@@ -31,6 +31,7 @@ from django.utils.functional import cached_property
 from polymorphic.models import PolymorphicModel
 from stripe.error import InvalidRequestError, StripeError
 
+from .managers import SepaSourceManager
 from . import settings as djstripe_settings
 from . import enums, webhooks
 from .context_managers import stripe_temporary_api_version
@@ -39,7 +40,8 @@ from .exceptions import MultipleSubscriptionException, StripeObjectManipulationE
 from .fields import (
     StripeBooleanField, StripeCharField, StripeCurrencyField, StripeDateTimeField,
     StripeFieldMixin, StripeIdField, StripeIntegerField, StripeJSONField,
-    StripeNullBooleanField, StripePercentField, StripePositiveIntegerField, StripeTextField
+    StripeNullBooleanField, StripePercentField, StripePositiveIntegerField, StripeTextField,
+    StripeURLField
 )
 from .managers import ChargeManager, StripeObjectManager, SubscriptionManager, TransferManager
 from .signals import WEBHOOK_SIGNALS, webhook_processing_error
@@ -561,7 +563,7 @@ class Charge(StripeObject):
         "Transfer",
         null=True, on_delete=models.CASCADE,
         help_text="The transfer to the destination account (only applicable if the charge was created using the "
-        "destination parameter)."
+                  "destination parameter)."
     )
     # TODO: transfer_group
 
@@ -1137,12 +1139,25 @@ class Customer(StripeObject):
         else:
             return subscriptions.first()
 
+    # TODO: Accept a coupon object when coupons are implemented
+    def subscribe(self, plan, charge_immediately=True, source=None, tax_percent=None, **kwargs):
+        # Convert Plan to stripe_id
+        if isinstance(plan, Plan):
+            plan = plan.stripe_id
+
+        stripe_subscription = super(Customer, self).subscribe(plan=plan, tax_percent=tax_percent, source=source, **kwargs)
+
+        if charge_immediately:
+            self.send_invoice(tax_percent=tax_percent, source=source)
+
+        return Subscription.sync_from_stripe_data(stripe_subscription)
+
     def can_charge(self):
         """Determines if this customer is able to be charged."""
 
         return self.has_valid_source() and self.date_purged is None
 
-    def send_invoice(self):
+    def send_invoice(self, source=None, tax_percent=None):
         """
         Pay and send the customer's latest invoice.
 
@@ -1150,8 +1165,11 @@ class Customer(StripeObject):
                   (typically if there was nothing to invoice).
         """
         try:
-            invoice = Invoice._api_create(customer=self.stripe_id)
-            invoice.pay()
+            invoice = Invoice._api_create(customer=self.stripe_id, tax_percent=tax_percent)
+            if isinstance(source, SepaSource):
+                invoice.pay(source=source)
+            else:
+                invoice.pay()
             return True
         except InvalidRequestError:  # TODO: Check this for a more specific error message.
             return False  # There was nothing to invoice
@@ -1202,16 +1220,25 @@ class Customer(StripeObject):
         # Have to create sources before we handle the default_source
         if data["sources"]:
             for source in data["sources"]["data"]:
-                if not isinstance(source, dict) or source.get("object") == SourceType.card:
+                if not isinstance(source, dict):
+                    continue
+                if source.get("object") == SourceType.card:
                     Card._get_or_create_from_stripe_object(source)
+                elif source.get("object") == 'source' and source.get("type") == SourceType.sepa_debit:
+                    SepaSource._get_or_create_from_stripe_object(source)
                 else:
                     logger.warning("Unsupported source type on %r: %r", self, source)
 
         default_source = data.get("default_source")
         if default_source:
             # TODO: other sources
-            if not isinstance(default_source, dict) or default_source.get("object") == SourceType.card:
+            if isinstance(default_source, dict) and default_source.get("object") == SourceType.card:
                 source, created = Card._get_or_create_from_stripe_object(data, "default_source", refetch=False)
+            elif (
+                isinstance(default_source, dict)
+                    and default_source.get("object") == 'source'
+                    and default_source.get("type") == SourceType.sepa_debit):
+                source, created = SepaSource._get_or_create_from_stripe_object(data, "default_source", refetch=False)
             else:
                 logger.warning("Unsupported source type on %r: %r", self, default_source)
                 source = None
@@ -1260,6 +1287,8 @@ class Customer(StripeObject):
     def _sync_cards(self, **kwargs):
         for stripe_card in Card.api_list(customer=self, **kwargs):
             Card.sync_from_stripe_data(stripe_card)
+        for sepa_source in SepaSource.api_list(customer=self, **kwargs):
+            SepaSource.sync_from_stripe_data(sepa_source)
 
     def _sync_subscriptions(self, **kwargs):
         for stripe_subscription in Subscription.api_list(customer=self.stripe_id, status="all", **kwargs):
@@ -1342,13 +1371,13 @@ class Event(StripeObject):
     valid = NullBooleanField(
         null=True,
         help_text="Tri-state bool. Null == validity not yet confirmed. Otherwise, this field indicates that this "
-        "event was checked via stripe api and found to be either authentic (valid=True) or in-authentic (possibly "
-        "malicious)"
+                  "event was checked via stripe api and found to be either authentic (valid=True) or in-authentic (possibly "
+                  "malicious)"
     )
     processed = BooleanField(
         default=False,
         help_text="If validity is performed, webhook event processor(s) may run to take further action on the event. "
-        "Once these have run, this is set to True."
+                  "Once these have run, this is set to True."
     )
 
     @property
@@ -1558,6 +1587,56 @@ class Payout(StripeObject):
 class StripeSource(PolymorphicModel, StripeObject):
     customer = models.ForeignKey("Customer", on_delete=models.CASCADE, related_name="sources")
 
+    @staticmethod
+    def _get_customer_from_kwargs(**kwargs):
+        if "customer" not in kwargs or not isinstance(kwargs["customer"], Customer):
+            raise StripeObjectManipulationException("Cards must be manipulated through a Customer. "
+                                                    "Pass a Customer object into this call.")
+
+        customer = kwargs["customer"]
+        del kwargs["customer"]
+
+        return customer, kwargs
+
+    def api_retrieve(self, api_key=None):
+        # OVERRIDING the parent version of this function
+        # Cards must be manipulated through a customer or account.
+        # TODO: When managed accounts are supported, this method needs to check if
+        # either a customer or account is supplied to determine the correct object to use.
+        api_key = api_key or self.default_api_key
+        customer = self.customer.api_retrieve(api_key=api_key)
+
+        # If the customer is deleted, the sources attribute will be absent.
+        # eg. {"id": "cus_XXXXXXXX", "deleted": True}
+        if "sources" not in customer:
+            # We fake a native stripe InvalidRequestError so that it's caught like an invalid ID error.
+            raise InvalidRequestError("No such source: %s" % (self.stripe_id), "id")
+
+        return customer.sources.retrieve(self.stripe_id, expand=self.expand_fields)
+
+    def remove(self):
+        """Removes a source from this customer's account."""
+        deleted = None
+        try:
+            result = self._api_delete()
+            deleted = result.get('deleted', False)
+        except InvalidRequestError as exc:
+            if "No such source:" in str(exc) or "No such customer:" in str(exc):
+                # The exception was thrown because the stripe customer or card was already
+                # deleted on the stripe side, ignore the exception
+                deleted = True
+                pass
+            else:
+                # The exception was raised for another reason, re-raise it
+                six.reraise(*sys.exc_info())
+
+        try:
+            if deleted:
+                self.delete()
+        except StripeSource.DoesNotExist:
+            # The card has already been deleted (potentially during the API call)
+            pass
+
 
 class Card(StripeSource):
     """
@@ -1626,17 +1705,6 @@ class Card(StripeSource):
         help_text="If the card number is tokenized, this is the method that was used."
     )
 
-    @staticmethod
-    def _get_customer_from_kwargs(**kwargs):
-        if "customer" not in kwargs or not isinstance(kwargs["customer"], Customer):
-            raise StripeObjectManipulationException("Cards must be manipulated through a Customer. "
-                                                    "Pass a Customer object into this call.")
-
-        customer = kwargs["customer"]
-        del kwargs["customer"]
-
-        return customer, kwargs
-
     @classmethod
     def _api_create(cls, api_key=djstripe_settings.STRIPE_SECRET_KEY, **kwargs):
         # OVERRIDING the parent version of this function
@@ -1669,9 +1737,62 @@ class Card(StripeSource):
     def get_stripe_dashboard_url(self):
         return self.customer.get_stripe_dashboard_url()
 
-    def remove(self):
-        """Removes a card from this customer's account."""
+    @property
+    def last4_display(self):
+        return '%s card ...%s' % (self.get_brand_display(), self.last4)
 
+
+class SepaSource(StripeSource):
+    """ This model holds the stripe keys for a sepa debit stripe source
+    """
+    stripe_class = stripe.Source
+    stripe_api_name = "Source"
+
+    STATUS_CHOICES = (
+        ('pending', 'pending'),
+        ('chargeable', 'chargeable'),
+        ('consumed', 'consumed'),
+        ('canceled', 'canceled'),
+        ('failed', 'failed'),
+    )
+    STATUS_INFO = {
+        'pending': 'The source has been created and is awaiting customer action',
+        'chargeable': 'The source is ready to use. The customer action has been completed or '
+                      'the payment method requires no customer action.',
+        'consumed': 'a single-use source has already been used',
+        'canceled': 'The source, which was chargeable, has expired because it was not used to '
+                    'make a charge request within a specified amount of time. This is applicable '
+                    'to single-use sources.',
+        'failed': 'Your customer has not taken the required action or revoked your access '
+                  '(e.g., did not authorize the payment with their bank or canceled their '
+                  'mandate acceptance for SEPA direct debits)',
+    }
+    status = StripeCharField(max_length=255, choices=STATUS_CHOICES)
+    client_secret = StripeCharField(max_length=255)  # TODO check if we need to save this, otherwise drop asap
+    currency = StripeCharField(max_length=255)
+    usage = StripeCharField(max_length=255)
+    bank_code = StripeCharField(max_length=255, nested_name='sepa_debit')
+    country = StripeCharField(max_length=255, nested_name='sepa_debit')
+    last4 = StripeCharField(max_length=255, nested_name='sepa_debit')
+    mandate_reference = StripeCharField(max_length=255, nested_name='sepa_debit')
+    mandate_url = StripeURLField(nested_name='sepa_debit')
+
+    @property
+    def status_info(self, status=None):
+        return StripeSource.STATUS_INFO[status or self.status]
+
+    objects = SepaSourceManager()
+
+    def _attach_objects_hook(self, cls, data):
+        customer = data.get('customer')
+        customer = customer if isinstance(customer, Customer) else cls._stripe_object_to_customer(target_cls=Customer, data=data)
+        if customer:
+            self.customer = customer
+        else:
+            raise ValidationError("A customer was not attached to this source.")
+
+    def remove(self):
+        """Removes a source from this customer's account."""
         try:
             self._api_delete()
         except InvalidRequestError as exc:
@@ -1685,61 +1806,35 @@ class Card(StripeSource):
 
         try:
             self.delete()
-        except StripeSource.DoesNotExist:
-            # The card has already been deleted (potentially during the API call)
+        except SepaSource.DoesNotExist:
+            # The source has already been deleted (potentially during the API call)
             pass
 
-    def api_retrieve(self, api_key=None):
+    @property
+    def last4_display(self):
+        return '%s99 %s0XXXXX%s' % (self.country, self.bank_code, self.last4)
+
+    @classmethod
+    def api_list(cls, api_key=djstripe_settings.STRIPE_SECRET_KEY, **kwargs):
         # OVERRIDING the parent version of this function
-        # Cards must be manipulated through a customer or account.
-        # TODO: When managed accounts are supported, this method needs to check if
-        # either a customer or account is supplied to determine the correct object to use.
-        api_key = api_key or self.default_api_key
-        customer = self.customer.api_retrieve(api_key=api_key)
+        # Sources must be manipulated through a customer or account.
 
-        # If the customer is deleted, the sources attribute will be absent.
-        # eg. {"id": "cus_XXXXXXXX", "deleted": True}
-        if "sources" not in customer:
-            # We fake a native stripe InvalidRequestError so that it's caught like an invalid ID error.
-            raise InvalidRequestError("No such source: %s" % (self.stripe_id), "id")
+        customer, clean_kwargs = cls._get_customer_from_kwargs(**kwargs)
 
-        return customer.sources.retrieve(self.stripe_id, expand=self.expand_fields)
+        return customer.api_retrieve(api_key=api_key).sources.list(
+            object="source", type="sepa_debit", **clean_kwargs).auto_paging_iter()
 
     def str_parts(self):
         return [
-            "brand={brand}".format(brand=self.brand),
+            "bank_code={bank_code}".format(bank_code=self.bank_code),
             "last4={last4}".format(last4=self.last4),
-            "exp_month={exp_month}".format(exp_month=self.exp_month),
-            "exp_year={exp_year}".format(exp_year=self.exp_year),
-        ] + super(Card, self).str_parts()
+            "status={status}".format(status=self.status),
+        ] + super(SepaSource, self).str_parts()
 
-    @classmethod
-    def create_token(cls, number, exp_month, exp_year, cvc, **kwargs):
-        """
-        Creates a single use token that wraps the details of a credit card. This token can be used in
-        place of a credit card dictionary with any API method. These tokens can only be used once: by
-        creating a new charge object, or attaching them to a customer.
-        (Source: https://stripe.com/docs/api/python#create_card_token)
-
-        :param exp_month: The card's expiration month.
-        :type exp_month: Two digit int
-        :param exp_year: The card's expiration year.
-        :type exp_year: Two or Four digit int
-        :param number: The card number
-        :type number: string without any separators (no spaces)
-        :param cvc: Card security code.
-        :type cvc: string
-        """
-
-        card = {
-            "number": number,
-            "exp_month": exp_month,
-            "exp_year": exp_year,
-            "cvc": cvc,
-        }
-        card.update(kwargs)
-
-        return stripe.Token.create(card=card)
+    @property
+    def last4_display(self):
+        return '%s99 %s0XXXXX%s' % (self.country, self.bank_code, self.last4)
+    # TODO implement add_card()
 
 
 # ============================================================================ #
@@ -2228,7 +2323,7 @@ class InvoiceItem(StripeObject):
         related_name="invoiceitems",
         on_delete=SET_NULL,
         help_text="If the invoice item is a proration, the plan of the subscription for which the proration was "
-        "computed."
+                  "computed."
     )
     proration = StripeBooleanField(
         default=False,
@@ -2360,7 +2455,7 @@ class Plan(StripeObject):
         # A few minor things are changed in the api-version of the create call
         api_kwargs = dict(kwargs)
         api_kwargs['id'] = api_kwargs['stripe_id']
-        del(api_kwargs['stripe_id'])
+        del (api_kwargs['stripe_id'])
         api_kwargs['amount'] = int(api_kwargs['amount'] * 100)
         cls._api_create(**api_kwargs)
 
