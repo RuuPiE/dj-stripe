@@ -1736,6 +1736,42 @@ class Card(StripeSource):
     def last4_display(self):
         return '%s card ...%s' % (self.get_brand_display(), self.last4)
 
+    def str_parts(self):
+        return [
+                   "brand={brand}".format(brand=self.brand),
+                   "last4={last4}".format(last4=self.last4),
+                   "exp_month={exp_month}".format(exp_month=self.exp_month),
+                   "exp_year={exp_year}".format(exp_year=self.exp_year),
+               ] + super(Card, self).str_parts()
+
+    @classmethod
+    def create_token(cls, number, exp_month, exp_year, cvc, **kwargs):
+        """
+        Creates a single use token that wraps the details of a credit card. This token can be used in
+        place of a credit card dictionary with any API method. These tokens can only be used once: by
+        creating a new charge object, or attaching them to a customer.
+        (Source: https://stripe.com/docs/api/python#create_card_token)
+
+        :param exp_month: The card's expiration month.
+        :type exp_month: Two digit int
+        :param exp_year: The card's expiration year.
+        :type exp_year: Two or Four digit int
+        :param number: The card number
+        :type number: string without any separators (no spaces)
+        :param cvc: Card security code.
+        :type cvc: string
+        """
+
+        card = {
+            "number": number,
+            "exp_month": exp_month,
+            "exp_year": exp_year,
+            "cvc": cvc,
+        }
+        card.update(kwargs)
+
+        return stripe.Token.create(card=card)
+
 
 class SepaSource(StripeSource):
     """ This model holds the stripe keys for a sepa debit stripe source
