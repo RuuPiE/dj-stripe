@@ -460,6 +460,19 @@ class TestCustomer(StripeTestCase):
             customer=self.customer.stripe_id
         )
 
+    @patch("stripe.Invoice.create")
+    def test_send_invoice_with_tax(self, invoice_create_mock):
+        # invoice_create_mock.side_effect = InvalidRequestError("Invoice creation failed.", "blah")
+
+        return_status = self.customer.send_invoice(tax_percent=21)
+        self.assertTrue(return_status)
+
+        invoice_create_mock.assert_called_once_with(
+            api_key=settings.STRIPE_SECRET_KEY,
+            customer=self.customer.stripe_id,
+            tax_percent=21,
+        )
+
     @patch("stripe.Coupon.retrieve", return_value=deepcopy(FAKE_COUPON))
     def test_sync_customer_with_discount(self, coupon_retrieve_mock):
         self.assertIsNone(self.customer.coupon)
