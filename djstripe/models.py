@@ -2819,6 +2819,33 @@ class Subscription(StripeObject):
         self.customer = cls._stripe_object_to_customer(target_cls=Customer, data=data)
         self.plan = cls._stripe_object_to_plan(target_cls=Plan, data=data)
 
+    @classmethod
+    def _stripe_object_to_subscription(cls, target_cls, data):
+        return super(Subscription, cls)._stripe_object_to_subscription(target_cls, data)
+
+    def api_retrieve(self, api_key=None):
+        """ wrap generic method and catch exception. this is because the stripe api now returns 404 on
+        cancelled subscriptions.
+        :param api_key:
+        :return:
+        """
+        try:
+            return super(Subscription, self).api_retrieve(api_key)
+        except InvalidRequestError as e:
+            logger.error('%s - (probably cancelled)', e)
+            return {
+                'id': self.stripe_id,
+                'cancelled': True
+            }
+
+    @classmethod
+    def _create_from_stripe_object(cls, data, save=True):
+        if data.get('cancelled'):
+            logger.warning('No data for subscription: %s. (probably cancelled)' % data.get('id'))
+            return None
+
+        return super(Subscription, cls)._create_from_stripe_object(data, save)
+
 
 # ============================================================================ #
 #                                   Connect                                    #
