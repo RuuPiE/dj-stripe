@@ -810,7 +810,7 @@ class Customer(StripeObject):
 
     def subscribe(
         self, plan, charge_immediately=True, application_fee_percent=None, coupon=None,
-        quantity=None, metadata=None, tax_percent=None, trial_end=None
+        quantity=None, metadata=None, tax_percent=None, trial_end=None, source=None
     ):
         """
         Subscribes this customer to a plan.
@@ -820,7 +820,8 @@ class Customer(StripeObject):
         * **source** - Subscriptions use the customer's default source. Including the source parameter creates \
                   a new source for this customer and overrides the default source. This functionality is not \
                   desired; add a source to the customer before attempting to add a subscription. \
-
+            [RA20170827: update: in order to use a SepaSource for recurring payments it seems to be necessary
+                        to attach the captured source to an active subscription]
 
         :param plan: The plan to which to subscribe the customer.
         :type plan: Plan or string (plan ID)
@@ -849,6 +850,10 @@ class Customer(StripeObject):
         :param charge_immediately: Whether or not to charge for the subscription upon creation. If False, an
                                    invoice will be created at the end of this period.
         :type charge_immediately: boolean
+        :param source: The SepaSource that will be used to pay this subscription. (also the captured sepasource
+                       will only be visible and chargable from the customers stripe dashboard after starting a
+                       subscription)
+        :type source: StripeSource instance or id
 
         .. Notes:
         .. ``charge_immediately`` is only available on ``Customer.subscribe()``
@@ -860,7 +865,7 @@ class Customer(StripeObject):
         if isinstance(plan, Plan):
             plan = plan.stripe_id
 
-        stripe_subscription = Subscription._api_create(
+        data = dict(
             plan=plan,
             customer=self.stripe_id,
             application_fee_percent=application_fee_percent,
@@ -868,8 +873,13 @@ class Customer(StripeObject):
             quantity=quantity,
             metadata=metadata,
             tax_percent=tax_percent,
-            trial_end=trial_end,
+            trial_end=trial_end
         )
+
+        if source:
+            data['source'] = source
+
+        stripe_subscription = Subscription._api_create(**data)
 
         if charge_immediately:
             self.send_invoice()
