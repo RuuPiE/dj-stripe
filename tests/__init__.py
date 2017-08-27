@@ -16,6 +16,7 @@ from copy import deepcopy
 from datetime import datetime
 
 from django.utils import timezone, dateformat
+from django.test import TestCase
 
 from djstripe.webhooks import TEST_EVENT_ID
 
@@ -24,6 +25,11 @@ FUTURE_DATE = datetime(2100, 4, 30, tzinfo=timezone.utc)
 
 def datetime_to_unix(datetime_):
     return int(dateformat.format(datetime_, 'U'))
+
+
+class StripeTestCase(TestCase):
+    def _should_check_constraints(self, connection):
+        return False
 
 
 class StripeList(dict):
@@ -35,7 +41,7 @@ class StripeList(dict):
         self.data = data
 
     def __getitem__(self, key):
-        return self.getattr(key)
+        return self.get(key)
 
     def auto_paging_iter(self):
         return self.data
@@ -87,11 +93,11 @@ FAKE_BALANCE_TRANSACTION_II = {
     "fee": 1927,
     "fee_details": [
         {
-          "amount": 1927,
-          "currency": "usd",
-          "type": "stripe_fee",
-          "description": "Stripe processing fees",
-          "application": None,
+            "amount": 1927,
+            "currency": "usd",
+            "type": "stripe_fee",
+            "description": "Stripe processing fees",
+            "application": None,
         }
     ],
     "net": 63473,
@@ -118,11 +124,11 @@ FAKE_BALANCE_TRANSACTION_III = {
     "fee": 1927,
     "fee_details": [
         {
-          "amount": 1927,
-          "currency": "usd",
-          "type": "stripe_fee",
-          "description": "Stripe processing fees",
-          "application": None,
+            "amount": 1927,
+            "currency": "usd",
+            "type": "stripe_fee",
+            "description": "Stripe processing fees",
+            "application": None,
         }
     ],
     "net": 73,
@@ -149,11 +155,11 @@ FAKE_BALANCE_TRANSACTION_IV = {
     "fee": 1927,
     "fee_details": [
         {
-          "amount": 1927,
-          "currency": "usd",
-          "type": "stripe_fee",
-          "description": "Stripe processing fees",
-          "application": None,
+            "amount": 1927,
+            "currency": "usd",
+            "type": "stripe_fee",
+            "description": "Stripe processing fees",
+            "application": None,
         }
     ],
     "net": 17083,
@@ -199,7 +205,6 @@ FAKE_BANK_ACCOUNT_II = {
 
 
 class CardDict(dict):
-
     def delete(self):
         return self
 
@@ -332,8 +337,83 @@ FAKE_CARD_V = CardDict({
 })
 
 
-class ChargeDict(dict):
+class SourceDict(dict):
+    def delete(self):
+        return self
 
+FAKE_SEPASOURCE_I = SourceDict({
+    "id": "src_abc123def456",
+    "customer": "cus_6lsBvm5rJ0zyHc",
+    "client_secret": "src_client_secret_abc123def456",
+    "object": "source",
+    "amount": None,
+    "currency": "eur",
+    "flow": "none",
+    "livemode": False,
+    "metadata": {},
+    # "owner": {
+    #     "address": None,
+    #     "email": "ruben@salestack.io",
+    #     "name": "Ruben",
+    #     "phone": None,
+    #     "verified_address": None,
+    #     "verified_email": None,
+    #     "verified_name": None,
+    #     "verified_phone": None
+    # },
+    "sepa_debit": {
+        "bank_code": "ABNA",
+        "branch_code": None,
+        "country": "NL",
+        "fingerprint": "veryunique",
+        "last4": "3566",
+        "mandate_reference": "mandate_abc123def456",
+        "mandate_url": "https://hooks.stripe.com/adapter/sepa_debit/file/src_abc123def456/src_client_secret_abc123def456"
+    },
+    "statement_descriptor": None,
+    "status": "chargeable",
+    "type": "sepa_debit",
+    "usage": "reusable"
+})
+
+FAKE_SEPASOURCE_II = SourceDict({
+    "id": "src_098zyx765wvu",
+    "customer": "cus_6lsBvm5rJ0zyHc",
+    "client_secret": "src_client_secret_098zyx765wvu",
+    "object": "source",
+    "amount": None,
+    "created": 1503799176,
+    "currency": "eur",
+    "flow": "none",
+    "livemode": False,
+    "metadata": {},
+    "owner": {
+        "address": None,
+        "email": "ruben@salestack.io",
+        "name": "Ruben",
+        "phone": None,
+        "verified_address": None,
+        "verified_email": None,
+        "verified_name": None,
+        "verified_phone": None
+    },
+    "sepa_debit": {
+        "bank_code": "ABNA",
+        "branch_code": None,
+        "country": "NL",
+        "fingerprint": "veryuniqueindeed",
+        "last4": "3566",
+        "mandate_reference": "P0DHIDQAO8SHZTSN",
+        "mandate_url": "https://hooks.stripe.com/adapter/sepa_debit/file/src_098zyx765wvu/src_client_secret_098zyx765wvu"
+    },
+    "statement_descriptor": None,
+    "status": "chargeable",
+    "type": "sepa_debit",
+    "usage": "reusable"
+})
+
+
+class ChargeDict(dict):
     def refund(self, amount=None, reason=None):
         self.update({"refunded": True, "amount_refunded": amount})
         return self
@@ -435,7 +515,6 @@ FAKE_CHARGE_II = ChargeDict({
     "status": "failed",
 })
 
-
 FAKE_COUPON = {
     "id": "fake-coupon-1",
     "object": "coupon",
@@ -452,7 +531,6 @@ FAKE_COUPON = {
     "times_redeemed": 0,
     "valid": True,
 }
-
 
 FAKE_PLAN = {
     "id": "gold21323",
@@ -486,7 +564,6 @@ FAKE_PLAN_II = {
 
 
 class SubscriptionDict(dict):
-
     def __setattr__(self, name, value):
         if type(value) == datetime:
             value = datetime_to_unix(value)
@@ -582,7 +659,6 @@ FAKE_SUBSCRIPTION_III = SubscriptionDict({
 
 
 class Sources(object):
-
     def __init__(self, card_fakes):
         self.card_fakes = card_fakes
 
@@ -597,7 +673,19 @@ class Sources(object):
                 return fake_card
 
     def list(self, **kwargs):
-        return StripeList(data=self.card_fakes)
+
+        _object = kwargs.get('object')
+        _type = kwargs.get('type')
+
+        fun = lambda x: x
+
+        if _object == 'source' and _type == 'sepa_debit':
+            fun = lambda x: x['object'] == 'source' and x.get('type')
+
+        if _object == 'card':
+            fun = lambda x: x['object'] == 'card'
+
+        return StripeList(data=filter(fun, self.card_fakes))
 
 
 class CustomerDict(dict):
@@ -638,7 +726,7 @@ FAKE_CUSTOMER = CustomerDict({
         "total_count": 2,
         "has_more": False,
         "url": "/v1/customers/cus_6lsBvm5rJ0zyHc/sources",
-        "data": [deepcopy(FAKE_CARD), deepcopy(FAKE_CARD_V)]
+        "data": [deepcopy(FAKE_CARD), deepcopy(FAKE_SEPASOURCE_I), deepcopy(FAKE_CARD_V), deepcopy(FAKE_SEPASOURCE_II)]
     },
     "subscriptions": {
         "object": "list",
@@ -648,7 +736,6 @@ FAKE_CUSTOMER = CustomerDict({
         "data": [deepcopy(FAKE_SUBSCRIPTION), deepcopy(FAKE_SUBSCRIPTION_II)]
     },
 })
-
 
 FAKE_CUSTOMER_II = CustomerDict({
     "id": "cus_4UbFSo9tl62jqj",
@@ -679,7 +766,6 @@ FAKE_CUSTOMER_II = CustomerDict({
         "data": [deepcopy(FAKE_SUBSCRIPTION_III)]
     },
 })
-
 
 FAKE_DISCOUNT_CUSTOMER = {
     "object": "discount",
@@ -813,7 +899,6 @@ FAKE_INVOICE_II = InvoiceDict({
     "total": 3000,
     "webhooks_delivered_at": 1439785139,
 })
-
 
 FAKE_INVOICE_III = InvoiceDict({
     "id": "in_16Z9dP2eZvKYlo2CgFHgFx2Z",
@@ -1341,7 +1426,6 @@ FAKE_EVENT_INVOICE_UPCOMING = {
     "type": "invoice.upcoming",
 }
 del FAKE_EVENT_INVOICE_UPCOMING["data"]["object"]["id"]
-
 
 FAKE_EVENT_INVOICEITEM_CREATED = {
     "id": "evt_187IHD2eZvKYlo2C7SXedrZk",

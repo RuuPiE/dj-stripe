@@ -15,7 +15,6 @@ from copy import deepcopy
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
 from django.utils import timezone
 from stripe.error import InvalidRequestError
 
@@ -23,6 +22,7 @@ from djstripe.exceptions import MultipleSubscriptionException
 from djstripe.models import Account, Card, Charge, Coupon, Customer, Invoice, Plan, Subscription
 from mock import ANY, patch
 
+from . import StripeTestCase
 from . import (
     FAKE_ACCOUNT, FAKE_CARD, FAKE_CARD_V, FAKE_CHARGE, FAKE_COUPON, FAKE_CUSTOMER, FAKE_CUSTOMER_II,
     FAKE_DISCOUNT_CUSTOMER, FAKE_INVOICE, FAKE_INVOICE_III, FAKE_INVOICEITEM, FAKE_PLAN,
@@ -30,7 +30,7 @@ from . import (
 )
 
 
-class TestCustomer(TestCase):
+class TestCustomer(StripeTestCase):
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="pydanny", email="pydanny@gmail.com")
@@ -117,7 +117,7 @@ class TestCustomer(TestCase):
         # customer_fake["default_source"] = customer_fake["sources"]["data"][0] = "card_sync_source_string"
         customer = Customer.sync_from_stripe_data(customer_fake)
         self.assertEqual(customer.default_source.stripe_id, customer_fake["default_source"]['id'])
-        self.assertEqual(customer.sources.count(), 2)
+        self.assertEqual(customer.sources.count(), 4)
 
     @patch("stripe.Customer.retrieve")
     def test_customer_purge_leaves_customer_record(self, customer_retrieve_fake):
@@ -152,7 +152,7 @@ class TestCustomer(TestCase):
 
         customer_retrieve_mock.assert_called_with(id=self.customer.stripe_id, api_key=settings.STRIPE_SECRET_KEY,
                                                   expand=['default_source'])
-        self.assertEqual(3, customer_retrieve_mock.call_count)
+        self.assertEqual(5, customer_retrieve_mock.call_count)
 
     @patch("stripe.Customer.retrieve")
     def test_customer_delete_raises_unexpected_exception(self, customer_retrieve_mock):

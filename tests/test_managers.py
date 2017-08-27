@@ -12,15 +12,15 @@ import decimal
 from copy import deepcopy
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
 from django.utils import timezone
 
 from djstripe.models import Charge, Customer, Plan, Subscription, Transfer
 
+from . import StripeTestCase
 from . import FAKE_PLAN, FAKE_PLAN_II, FAKE_TRANSFER, FAKE_TRANSFER_II, FAKE_TRANSFER_III
 
 
-class SubscriptionManagerTest(TestCase):
+class SubscriptionManagerTest(StripeTestCase):
 
     def setUp(self):
         # create customers and current subscription records
@@ -144,7 +144,7 @@ class SubscriptionManagerTest(TestCase):
         )
 
 
-class TransferManagerTest(TestCase):
+class TransferManagerTest(StripeTestCase):
 
     def test_transfer_summary(self):
         Transfer.sync_from_stripe_data(deepcopy(FAKE_TRANSFER))
@@ -159,7 +159,7 @@ class TransferManagerTest(TestCase):
         )
 
 
-class ChargeManagerTest(TestCase):
+class ChargeManagerTest(StripeTestCase):
 
     def setUp(self):
         customer = Customer.objects.create(

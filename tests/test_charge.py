@@ -11,16 +11,16 @@ from copy import deepcopy
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test.testcases import TestCase
 
 from djstripe.enums import SourceType
 from djstripe.models import Account, Charge
 from mock import patch
 
+from . import StripeTestCase
 from . import FAKE_ACCOUNT, FAKE_CHARGE, FAKE_CUSTOMER, FAKE_TRANSFER
 
 
-class ChargeTest(TestCase):
+class ChargeTest(StripeTestCase):
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="user", email="user@example.com")
