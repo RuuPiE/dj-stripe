@@ -1037,7 +1037,7 @@ class Customer(StripeObject):
         # Change the default source
         if set_default:
             self.default_source = new_stripe_card
-            new_stripe_card = self.save()
+            self.save()
 
         return new_stripe_card
 
