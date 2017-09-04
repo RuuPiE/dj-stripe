@@ -15,6 +15,8 @@ import decimal
 import logging
 import sys
 import uuid
+import operator
+
 from copy import deepcopy
 from datetime import timedelta
 
@@ -1013,7 +1015,7 @@ class Customer(StripeObject):
 
         return InvoiceItem.sync_from_stripe_data(stripe_invoiceitem)
 
-    def add_card(self, source, set_default=True):
+    def add_card(self, source, set_default=True, cls=None):
         """
         Adds a card to this customer's account.
 
@@ -1022,24 +1024,57 @@ class Customer(StripeObject):
         :type source: string, dict
         :param set_default: Whether or not to set the source as the customer's default source
         :type set_default: boolean
+        :type cls: Source Class to use
 
         """
+        cls = cls or Card
+        assert cls in (Card, SepaSource)
 
         stripe_customer = self.api_retrieve()
-        new_stripe_card = stripe_customer.sources.create(source=source)
+        new_stripe_source = stripe_customer.sources.create(source=source)
 
         if set_default:
-            stripe_customer.default_source = new_stripe_card["id"]
+            stripe_customer.default_source = new_stripe_source["id"]
             stripe_customer.save()
 
-        new_stripe_card = Card.sync_from_stripe_data(new_stripe_card)
+        new_stripe_source = cls.sync_from_stripe_data(new_stripe_source)
 
         # Change the default source
         if set_default:
-            self.default_source = new_stripe_card
+            self.default_source = new_stripe_source
             self.save()
 
-        return new_stripe_card
+        return new_stripe_source
+
+    def add_sepasource(self, data, set_default=True):
+        """
+        Adds a sepa_source to this customer's account.
+
+        :param data: Data returned from stripe api after capturing source
+        :type data: dict
+        :param set_default: Whether or not to set the source as the customer's default source
+        :type set_default: boolean
+
+        """
+        source_data = data['source']
+        source_data['customer'] = self.stripe_id
+
+        stripe_customer = self.api_retrieve()
+
+
+        # this doesn't seem to work
+        # if set_default:
+        #     stripe_customer.default_source = source_data
+        #     stripe_customer.save()
+
+        source = SepaSource.sync_from_stripe_data({'id': source_data})
+
+        if set_default:
+
+            self.default_source = source
+            self.save()
+
+        return source
 
     def purge(self):
         try:
@@ -1290,10 +1325,40 @@ class Customer(StripeObject):
             Charge.sync_from_stripe_data(stripe_charge)
 
     def _sync_cards(self, **kwargs):
+        """ Sync ONLY cards. use _sync_sources to fetch all supported source types
+        :param kwargs:
+        :return:
+        """
         for stripe_card in Card.api_list(customer=self, **kwargs):
             Card.sync_from_stripe_data(stripe_card)
-        for sepa_source in SepaSource.api_list(customer=self, **kwargs):
-            SepaSource.sync_from_stripe_data(sepa_source)
+
+    def _sync_sources(self, delete_zombies=True, **kwargs):
+        """ Sync all available payment sources (including cards0
+        :param delete_zombies: delete local records which seem to be removed from stripe
+        :param kwargs:
+        :return:
+        """
+        source_classes = Card, SepaSource
+        sources_from_api = reduce(
+            operator.add,
+            map(
+                lambda cls: map(cls.sync_from_stripe_data, cls.api_list(customer=self, **kwargs)),
+                source_classes
+            )
+        )
+        if delete_zombies:
+
+            zombies = filter(
+                lambda x: x.stripe_id not in set(map(lambda x: x.stripe_id, sources_from_api)),
+                self.sources.all()
+            )
+            if zombies:
+                logger.warning('Delete %i zombie sources (not returned by stripe.): [%s]'
+                               % (len(zombies), ' '.join(map(lambda x: x.stripe_id, zombies))))
+                map(lambda x: x.delete(), zombies)
+
+        return sources_from_api
+
 
     def _sync_subscriptions(self, **kwargs):
         for stripe_subscription in Subscription.api_list(customer=self.stripe_id, status="all", **kwargs):
