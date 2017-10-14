@@ -86,7 +86,7 @@ class MiddlewareURLTest(TestCase):
         the change to django's middleware class structure. See
         https://docs.djangoproject.com/en/1.10/topics/http/middleware/#upgrading-pre-django-1-10-style-middleware
         """
-        self.client.get('/__debug__')
+        self.client.get('/__debug__/')
 
 
 class MiddlewareLogicTest(TestCase):
