@@ -11,14 +11,13 @@ from copy import deepcopy
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from mock.mock import patch
 from stripe.error import InvalidRequestError
 
 from djstripe.exceptions import StripeObjectManipulationException
 from djstripe.models import Account, Card
-from mock.mock import patch
-
-from . import StripeTestCase
 from . import FAKE_CARD, FAKE_CARD_III, FAKE_CARD_V, FAKE_CUSTOMER
+from . import StripeTestCase
 
 
 class CardTest(StripeTestCase):

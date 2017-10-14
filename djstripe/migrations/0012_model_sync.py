@@ -3,15 +3,8 @@ from __future__ import (
     absolute_import, division, print_function, unicode_literals
 )
 
-import sys
-
-from django.core import serializers
 from django.db import migrations
 from django.db.migrations.operations.special import RunPython
-from django.db.utils import IntegrityError
-from django.utils import six
-from stripe.error import InvalidRequestError
-from tqdm import tqdm
 
 from djstripe.sync import (
     resync_subscriptions,

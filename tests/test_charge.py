@@ -11,13 +11,12 @@ from copy import deepcopy
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from mock import patch
 
 from djstripe.enums import SourceType
 from djstripe.models import Account, Charge
-from mock import patch
-
-from . import StripeTestCase
 from . import FAKE_ACCOUNT, FAKE_CHARGE, FAKE_CUSTOMER, FAKE_TRANSFER
+from . import StripeTestCase
 
 
 class ChargeTest(StripeTestCase):
