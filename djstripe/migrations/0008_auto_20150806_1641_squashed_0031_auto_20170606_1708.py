@@ -44,20 +44,20 @@ def resync_subscriptions(apps, schema_editor):
         if Subscription.objects.count():
             print("Purging subscriptions. Don't worry, all active subscriptions will be re-synced from stripe. Just in \
             case you didn't get the memo, we'll print out a json representation of each object for your records:")
-            print(serializers.serialize("json", Subscription.objects.all()))
+            # print(serializers.serialize("json", Subscription.objects.all()))
             Subscription.objects.all().delete()
 
-            print("Re-syncing subscriptions. This may take a while.")
-
-            for stripe_subscription in tqdm(iterable=Subscription.api_list(), desc="Sync", unit=" subscriptions"):
-                subscription = Subscription.sync_from_stripe_data(stripe_subscription)
-
-                if not subscription.customer:
-                    tqdm.write("The customer for this subscription ({subscription_id}) does not exist locally (so we \
-                    won't sync the subscription). You'll want to figure out how that \
-                    happened.".format(subscription_id=stripe_subscription['id']))
-
-            print("Subscription re-sync complete.")
+            # print("Re-syncing subscriptions. This may take a while.")
+            #
+            # for stripe_subscription in tqdm(iterable=Subscription.api_list(), desc="Sync", unit=" subscriptions"):
+            #     subscription = Subscription.sync_from_stripe_data(stripe_subscription)
+            #
+            #     if not subscription.customer:
+            #         tqdm.write("The customer for this subscription ({subscription_id}) does not exist locally (so we \
+            #         won't sync the subscription). You'll want to figure out how that \
+            #         happened.".format(subscription_id=stripe_subscription['id']))
+            #
+            # print("Subscription re-sync complete.")
 
 
 def resync_invoiceitems(apps, schema_editor):
@@ -1257,21 +1257,21 @@ class Migration(migrations.Migration):
         migrations.RunPython(
             code=resync_subscriptions,
         ),
-        migrations.RunPython(
-            code=resync_invoiceitems,
-        ),
-        migrations.RunPython(
-            code=sync_charges,
-        ),
-        migrations.RunPython(
-            code=sync_invoices,
-        ),
-        migrations.RunPython(
-            code=sync_transfers,
-        ),
-        migrations.RunPython(
-            code=sync_customers,
-        ),
+        # migrations.RunPython(
+        #     code=resync_invoiceitems,
+        # ),
+        # migrations.RunPython(
+        #     code=sync_charges,
+        # ),
+        # migrations.RunPython(
+        #     code=sync_invoices,
+        # ),
+        # migrations.RunPython(
+        #     code=sync_transfers,
+        # ),
+        # migrations.RunPython(
+        #     code=sync_customers,
+        # ),
         migrations.AlterField(
             model_name='subscription',
             name='stripe_id',
