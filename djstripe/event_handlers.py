@@ -22,6 +22,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import logging
 
+from models import PaymentMethod
 from . import webhooks
 from .enums import SourceType
 from .models import (
@@ -29,9 +30,6 @@ from .models import (
     Transfer, SepaSource
 )
 from .utils import convert_tstamp
-
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -118,16 +116,21 @@ def customer_source_webhook_handler(event):
     source_type = customer_data.get("object", {})
 
     # TODO: handle other types of sources (https://stripe.com/docs/api#customer_object-sources)
-    if source_type == SourceType.card:
-        _handle_crud_like_event(
-            target_cls=Card,
-            event=event
-        )
-    elif source_type == SourceType.sepa_debit:
-        _handle_crud_like_event(
-            target_cls=SepaSource,
-            event=event
-        )
+    if source_type in (SourceType.card, SourceType.sepa_debit):
+        if event.verb.endswith("deleted") and customer_data:
+            # On customer.source.deleted, we do not delete the object, we merely unlink it.
+            # customer = Customer.objects.get(stripe_id=customer_data["id"])
+            # NOTE: for now, customer.sources still points to Card
+            # Also, https://github.com/dj-stripe/dj-stripe/issues/576
+            Card.objects.filter(stripe_id=customer_data.get("id", "")).delete()
+            SepaSource.objects.filter(stripe_id=customer_data.get("id", "")).delete()
+            PaymentMethod.objects.filter(id=customer_data.get("id", "")).delete()
+        else:
+            cls = Card if source_type == SourceType.card else SepaSource
+            _handle_crud_like_event(
+                target_cls=cls,
+                event=event
+            )
 
 
 @webhooks.handler("customer.subscription")
@@ -265,11 +268,11 @@ def _handle_crud_like_event(target_cls, event, data=None, verb=None,
         return
 
     if crud_type.deleted:
-        try:
-            obj = target_cls.objects.get(stripe_id=stripe_id)
-            obj.delete()
-        except target_cls.DoesNotExist:
-            pass
+        qs = target_cls.objects.filter(stripe_id=stripe_id)
+        if target_cls is Customer and qs.exists():
+            qs.get().purge()
+        else:
+            obj = target_cls.objects.filter(stripe_id=stripe_id).delete()
     else:
         # Any other event type (creates, updates, etc.) - This can apply to
         # verbs that aren't strictly CRUD but Stripe do intend an update.  Such

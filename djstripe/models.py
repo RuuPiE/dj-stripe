@@ -13,46 +13,81 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 import decimal
 import logging
+import operator
 import sys
 import uuid
-import operator
-
 from copy import deepcopy
 from datetime import timedelta
 
 import stripe
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models, IntegrityError
+from django.db import models, transaction
 from django.db.models.deletion import SET_NULL
 from django.db.models.fields import BooleanField, CharField, DateTimeField, NullBooleanField, TextField, UUIDField
 from django.db.models.fields.related import ForeignKey, OneToOneField
-from django.db.utils import IntegrityError
 from django.utils import dateformat, six, timezone
 from django.utils.encoding import python_2_unicode_compatible, smart_text
 from django.utils.functional import cached_property
 from polymorphic.models import PolymorphicModel
 from stripe.error import InvalidRequestError, StripeError
 
-from .managers import SepaSourceManager
-from . import settings as djstripe_settings
 from . import enums, webhooks
+from . import settings as djstripe_settings
 from .context_managers import stripe_temporary_api_version
 from .enums import SourceType, SubscriptionStatus
 from .exceptions import MultipleSubscriptionException, StripeObjectManipulationException
 from .fields import (
-    StripeBooleanField, StripeCharField, StripeCurrencyField, StripeDateTimeField,
-    StripeFieldMixin, StripeIdField, StripeIntegerField, StripeJSONField,
-    StripeNullBooleanField, StripePercentField, StripePositiveIntegerField, StripeTextField,
-    StripeURLField
+    StripeURLField,
+    PaymentMethodForeignKey, StripeBooleanField, StripeCharField, StripeCurrencyField,
+    StripeDateTimeField, StripeFieldMixin, StripeIdField, StripeIntegerField, StripeJSONField,
+    StripeNullBooleanField, StripePercentField, StripePositiveIntegerField, StripeTextField
 )
 from .managers import ChargeManager, StripeObjectManager, SubscriptionManager, TransferManager
+from .managers import SepaSourceManager
 from .signals import WEBHOOK_SIGNALS, webhook_processing_error
 from .utils import QuerySetMock, get_friendly_currency_amount
 
 logger = logging.getLogger(__name__)
 # Override the default API version used by the Stripe library.
 djstripe_settings.set_stripe_api_version()
+
+
+class PaymentMethod(models.Model):
+    """
+    An internal model that abstracts the legacy Card and BankAccount
+    objects with Source objects.
+
+    Contains two fields: `id` and `type`:
+    - `id` is the id of the Stripe object.
+    - `type` can be `card`, `bank_account` or `source`.
+    """
+    id = CharField(max_length=255, primary_key=True)
+    type = CharField(max_length=12, db_index=True)
+
+    @classmethod
+    def _get_or_create_source(cls, data, source_type):
+        # TODO other source types
+        if source_type == SourceType.card:
+            Card._get_or_create_from_stripe_object(data)
+
+        if source_type == SourceType.sepa_debit:
+            SepaSource._get_or_create_from_stripe_object(data)
+
+        return cls.objects.get_or_create(id=data["id"], defaults={"type": source_type})
+
+    @property
+    def stripe_id(self):
+        # Deprecated (transitional)
+        return self.id
+
+    @property
+    def object_model(self):
+        # TODO other source types
+        return Card
+
+    def get_object(self):
+        return self.object_model.objects.get(stripe_id=self.id)
 
 
 @python_2_unicode_compatible
@@ -112,15 +147,7 @@ class StripeObject(models.Model):
 
     @property
     def default_api_key(self):
-        if self.livemode is None:
-            # Livemode is unknown. Use the default secret key.
-            return djstripe_settings.STRIPE_SECRET_KEY
-        elif self.livemode:
-            # Livemode is true, use the live secret key
-            return djstripe_settings.LIVE_API_KEY or djstripe_settings.STRIPE_SECRET_KEY
-        else:
-            # Livemode is false, use the test secret key
-            return djstripe_settings.TEST_API_KEY or djstripe_settings.STRIPE_SECRET_KEY
+        return djstripe_settings.get_default_api_key(self.livemode)
 
     def api_retrieve(self, api_key=None):
         """
@@ -253,11 +280,7 @@ class StripeObject(models.Model):
         instance._attach_objects_hook(cls, data)
 
         if save:
-            try:
-                instance.save()
-            except IntegrityError as e:
-                logger.error('IntegrityError: %s\ncls: %s\ndata: %s' % (e, cls, data))
-                return instance
+            instance.save()
 
         instance._attach_objects_post_save_hook(cls, data)
 
@@ -331,20 +354,6 @@ class StripeObject(models.Model):
 
         if "transfer" in data and data["transfer"]:
             return target_cls._get_or_create_from_stripe_object(data, "transfer")[0]
-
-    @classmethod
-    def _stripe_object_to_source(cls, target_cls, data):
-        """
-        Search the given manager for the source matching this object's ``source`` field.
-        Note that the source field is already expanded in each request, and that it is required.
-
-        :param target_cls: The target class
-        :type target_cls: Source
-        :param data: stripe object
-        :type data: dict
-        """
-
-        return target_cls._get_or_create_from_stripe_object(data["source"])[0]
 
     @classmethod
     def _stripe_object_to_invoice(cls, target_cls, data):
@@ -548,9 +557,8 @@ class Charge(StripeObject):
     )
     # TODO: refunds, review
     shipping = StripeJSONField(null=True, help_text="Shipping information for the charge")
-    source = ForeignKey(
-        "StripeSource", on_delete=SET_NULL,
-        null=True, related_name="charges",
+    source = PaymentMethodForeignKey(
+        on_delete=SET_NULL, null=True, related_name="charges",
         help_text="The source used for this charge."
     )
     # TODO: source, source_transfer
@@ -611,9 +619,7 @@ class Charge(StripeObject):
         else:
             self.account = Account.get_default_account()
 
-        # TODO: other sources
-        if self.source_type == SourceType.card:
-            self.source = cls._stripe_object_to_source(target_cls=Card, data=data)
+        self.source, _ = PaymentMethod._get_or_create_source(data["source"], self.source_type)
 
     def str_parts(self):
         return [
@@ -736,7 +742,7 @@ class Customer(StripeObject):
         help_text="The currency the customer can be charged in for recurring billing purposes (subscriptions, "
                   "invoices, invoice items)."
     )
-    default_source = ForeignKey("StripeSource", null=True, related_name="customers", on_delete=SET_NULL)
+    default_source = PaymentMethodForeignKey(on_delete=SET_NULL, null=True, related_name="customers")
     delinquent = StripeBooleanField(
         help_text="Whether or not the latest charge for the customer's latest invoice has failed."
     )
@@ -934,7 +940,7 @@ class Customer(StripeObject):
         currency = currency or "usd"
 
         # Convert Source to stripe_id
-        if source and isinstance(source, StripeSource):
+        if source and isinstance(source, Card):
             source = source.stripe_id
 
         stripe_charge = Charge._api_create(
@@ -1031,20 +1037,25 @@ class Customer(StripeObject):
         assert cls in (Card, SepaSource)
 
         stripe_customer = self.api_retrieve()
-        new_stripe_source = stripe_customer.sources.create(source=source)
+        new_stripe_card = stripe_customer.sources.create(source=source)
 
         if set_default:
-            stripe_customer.default_source = new_stripe_source["id"]
+            stripe_customer.default_source = new_stripe_card["id"]
             stripe_customer.save()
 
-        new_stripe_source = cls.sync_from_stripe_data(new_stripe_source)
+        with transaction.atomic():
+            new_card = Card.sync_from_stripe_data(new_stripe_card)
+            new_payment_method, _ = PaymentMethod.objects.get_or_create(
+                id=new_stripe_card["id"], defaults={"type": "card"}
+            )
 
         # Change the default source
         if set_default:
-            self.default_source = new_stripe_source
-            self.save()
+            self.default_source = new_payment_method
+            new_card = self.save()
 
-        return new_stripe_source
+        return new_card
+
 
     def add_sepasource(self, data, set_default=True):
         """
@@ -1066,8 +1077,11 @@ class Customer(StripeObject):
         # if set_default:
         #     stripe_customer.default_source = source_data
         #     stripe_customer.save()
-
-        source = SepaSource.sync_from_stripe_data({'id': source_data})
+        with transaction.atomic():
+            source = SepaSource.sync_from_stripe_data({'id': source_data})
+            new_payment_method, _ = PaymentMethod.objects.get_or_create(
+                id=source["id"], defaults={"type": "sepa_debit"}
+            )
 
         if set_default:
 
@@ -1257,35 +1271,26 @@ class Customer(StripeObject):
     def _attach_objects_post_save_hook(self, cls, data):  # noqa (function complexity)
         save = False
 
-        # Have to create sources before we handle the default_source
-        if data["sources"]:
-            for source in data["sources"]["data"]:
-                if not isinstance(source, dict):
-                    continue
-                if source.get("object") == SourceType.card:
-                    Card._get_or_create_from_stripe_object(source)
-                elif source.get("object") == 'source' and source.get("type") == SourceType.sepa_debit:
-                    SepaSource._get_or_create_from_stripe_object(source)
-                else:
-                    logger.warning("Unsupported source type on %r: %r", self, source)
+        customer_sources = data.get("sources")
+        if customer_sources:
+            # Have to create sources before we handle the default_source
+            # We save all of them in the `sources` dict, so that we can find them
+            # by id when we look at the default_source (we need the source type).
+            sources = {}
+            for source in customer_sources["data"]:
+                obj, _ = PaymentMethod._get_or_create_source(source, source["object"])
+                sources[source["id"]] = obj
 
         default_source = data.get("default_source")
         if default_source:
-            # TODO: other sources
-            if isinstance(default_source, dict) and default_source.get("object") == SourceType.card:
-                source, created = Card._get_or_create_from_stripe_object(data, "default_source", refetch=False)
-            elif (
-                        isinstance(default_source, dict)
-                    and default_source.get("object") == 'source'
-                and default_source.get("type") == SourceType.sepa_debit):
-                source, created = SepaSource._get_or_create_from_stripe_object(data, "default_source", refetch=False)
+            if isinstance(default_source, six.string_types):
+                default_source_id = default_source
             else:
-                logger.warning("Unsupported source type on %r: %r", self, default_source)
-                source = None
+                default_source_id = default_source["id"]
+            source = sources[default_source_id]
 
-            if source and source != self.default_source:
-                self.default_source = source
-                save = True
+            save = self.default_source != source
+            self.default_source = source
 
         discount = data.get("discount")
         if discount:
@@ -1717,7 +1722,7 @@ class StripeSource(PolymorphicModel, StripeObject):
             pass
 
 
-class Card(StripeSource):
+class Card(StripeObject):
     """
     You can store multiple cards on a customer in order to charge the customer later.
     (Source: https://stripe.com/docs/api/python#cards)
@@ -1784,6 +1789,21 @@ class Card(StripeSource):
         help_text="If the card number is tokenized, this is the method that was used."
     )
 
+    customer = models.ForeignKey(
+        "Customer", on_delete=models.CASCADE, related_name="sources"
+    )
+
+    @staticmethod
+    def _get_customer_from_kwargs(**kwargs):
+        if "customer" not in kwargs or not isinstance(kwargs["customer"], Customer):
+            raise StripeObjectManipulationException("Cards must be manipulated through a Customer. "
+                                                    "Pass a Customer object into this call.")
+
+        customer = kwargs["customer"]
+        del kwargs["customer"]
+
+        return customer, kwargs
+
     @classmethod
     def _api_create(cls, api_key=djstripe_settings.STRIPE_SECRET_KEY, **kwargs):
         # OVERRIDING the parent version of this function
@@ -1820,6 +1840,38 @@ class Card(StripeSource):
     def last4_display(self):
         return '%s card ...%s' % (self.get_brand_display(), self.last4)
 
+    def remove(self):
+        """Removes a card from this customer's account."""
+
+        try:
+            self._api_delete()
+        except InvalidRequestError as exc:
+            if "No such source:" in str(exc) or "No such customer:" in str(exc):
+                # The exception was thrown because the stripe customer or card was already
+                # deleted on the stripe side, ignore the exception
+                pass
+            else:
+                # The exception was raised for another reason, re-raise it
+                six.reraise(*sys.exc_info())
+
+        self.delete()
+
+    def api_retrieve(self, api_key=None):
+        # OVERRIDING the parent version of this function
+        # Cards must be manipulated through a customer or account.
+        # TODO: When managed accounts are supported, this method needs to check if
+        # either a customer or account is supplied to determine the correct object to use.
+        api_key = api_key or self.default_api_key
+        customer = self.customer.api_retrieve(api_key=api_key)
+
+        # If the customer is deleted, the sources attribute will be absent.
+        # eg. {"id": "cus_XXXXXXXX", "deleted": True}
+        if "sources" not in customer:
+            # We fake a native stripe InvalidRequestError so that it's caught like an invalid ID error.
+            raise InvalidRequestError("No such source: %s" % (self.stripe_id), "id")
+
+        return customer.sources.retrieve(self.stripe_id, expand=self.expand_fields)
+
     def str_parts(self):
         return [
                    "brand={brand}".format(brand=self.brand),
@@ -1829,7 +1881,10 @@ class Card(StripeSource):
                ] + super(Card, self).str_parts()
 
     @classmethod
-    def create_token(cls, number, exp_month, exp_year, cvc, **kwargs):
+    def create_token(
+        cls, number, exp_month, exp_year, cvc,
+        api_key=djstripe_settings.STRIPE_SECRET_KEY, **kwargs
+    ):
         """
         Creates a single use token that wraps the details of a credit card. This token can be used in
         place of a credit card dictionary with any API method. These tokens can only be used once: by
@@ -1854,7 +1909,11 @@ class Card(StripeSource):
         }
         card.update(kwargs)
 
-        return stripe.Token.create(card=card)
+        return stripe.Token.create(api_key=api_key, card=card)
+
+
+# Backwards compatibility
+StripeSource = Card
 
 
 class SepaSource(StripeSource):
@@ -3129,4 +3188,3 @@ class EventProcessingException(models.Model):
 
 # Much like registering signal handlers. We import this module so that its registrations get picked up
 # the NO QA directive tells flake8 to not complain about the unused import
-from . import event_handlers  # NOQA, isort:skip
