@@ -95,7 +95,7 @@ class ChargeManager(models.Manager):
         )
 
 
-class SepaSourceManager(PolymorphicManager):
+class SepaSourceManager(models.QuerySet):
     """ Manager used by models.SepaSource."""
 
     def create_from_stripe(self, stripe_data, customer):

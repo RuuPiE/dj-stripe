@@ -62,8 +62,10 @@ class PaymentMethod(models.Model):
     - `id` is the id of the Stripe object.
     - `type` can be `card`, `bank_account` or `source`.
     """
+
     id = CharField(max_length=255, primary_key=True)
     type = CharField(max_length=12, db_index=True)
+
 
     @classmethod
     def _get_or_create_source(cls, data, source_type):
@@ -83,8 +85,16 @@ class PaymentMethod(models.Model):
 
     @property
     def object_model(self):
-        # TODO other source types
-        return Card
+        types = dict(
+            card=Card,
+            source=SepaSource,
+            # TODO type bank_account
+        )
+
+        if self.type not in types:
+            raise NotImplemented('PaymentMethod.type=%s', self.type)
+
+        return types[self.type]
 
     def get_object(self):
         return self.object_model.objects.get(stripe_id=self.id)
@@ -1056,7 +1066,6 @@ class Customer(StripeObject):
 
         return new_card
 
-
     def add_sepasource(self, data, set_default=True):
         """
         Adds a sepa_source to this customer's account.
@@ -1659,69 +1668,6 @@ class Payout(StripeObject):
 #                               Payment Methods                                #
 # ============================================================================ #
 
-class StripeSource(PolymorphicModel, StripeObject):
-    customer = models.ForeignKey("Customer", on_delete=models.CASCADE, related_name="sources")
-
-    @staticmethod
-    def _get_customer_from_kwargs(**kwargs):
-        if "customer" not in kwargs or not isinstance(kwargs["customer"], Customer):
-            raise StripeObjectManipulationException("Cards must be manipulated through a Customer. "
-                                                    "Pass a Customer object into this call.")
-
-        customer = kwargs["customer"]
-        del kwargs["customer"]
-
-        return customer, kwargs
-
-    @property
-    def is_default(self):
-        """
-        :return: True if this instance is customer's default_source
-        """
-        if not self.customer:
-            return False
-        return self == self.customer.default_source
-
-    def api_retrieve(self, api_key=None):
-        # OVERRIDING the parent version of this function
-        # Cards must be manipulated through a customer or account.
-        # TODO: When managed accounts are supported, this method needs to check if
-        # either a customer or account is supplied to determine the correct object to use.
-        api_key = api_key or self.default_api_key
-        customer = self.customer.api_retrieve(api_key=api_key)
-
-        # If the customer is deleted, the sources attribute will be absent.
-        # eg. {"id": "cus_XXXXXXXX", "deleted": True}
-        if "sources" not in customer:
-            # We fake a native stripe InvalidRequestError so that it's caught like an invalid ID error.
-            raise InvalidRequestError("No such source: %s" % (self.stripe_id), "id")
-
-        return customer.sources.retrieve(self.stripe_id, expand=self.expand_fields)
-
-    def remove(self):
-        """Removes a source from this customer's account."""
-        deleted = None
-        try:
-            result = self._api_delete()
-            deleted = result.get('deleted', False)
-        except InvalidRequestError as exc:
-            if "No such source:" in str(exc) or "No such customer:" in str(exc):
-                # The exception was thrown because the stripe customer or card was already
-                # deleted on the stripe side, ignore the exception
-                deleted = True
-                pass
-            else:
-                # The exception was raised for another reason, re-raise it
-                six.reraise(*sys.exc_info())
-
-        try:
-            if deleted:
-                self.delete()
-        except StripeSource.DoesNotExist:
-            # The card has already been deleted (potentially during the API call)
-            pass
-
-
 class Card(StripeObject):
     """
     You can store multiple cards on a customer in order to charge the customer later.
@@ -1790,8 +1736,9 @@ class Card(StripeObject):
     )
 
     customer = models.ForeignKey(
-        "Customer", on_delete=models.CASCADE, related_name="sources"
+        "Customer", on_delete=models.CASCADE, related_name="cards"
     )
+
 
     @staticmethod
     def _get_customer_from_kwargs(**kwargs):
@@ -1912,11 +1859,11 @@ class Card(StripeObject):
         return stripe.Token.create(api_key=api_key, card=card)
 
 
-# Backwards compatibility
-StripeSource = Card
+# # Backwards compatibility
+# StripeSource = Card
 
 
-class SepaSource(StripeSource):
+class SepaSource(StripeObject):
     """ This model holds the stripe keys for a sepa debit stripe source
     """
     stripe_class = stripe.Source
@@ -1950,12 +1897,63 @@ class SepaSource(StripeSource):
     last4 = StripeCharField(max_length=255, nested_name='sepa_debit')
     mandate_reference = StripeCharField(max_length=255, nested_name='sepa_debit')
     mandate_url = StripeURLField(nested_name='sepa_debit')
+    objects = SepaSourceManager.as_manager()
+
+    customer = models.ForeignKey(
+        "Customer", on_delete=models.CASCADE, related_name="sources"
+    )
+
+    @staticmethod
+    def _get_customer_from_kwargs(**kwargs):
+        if "customer" not in kwargs or not isinstance(kwargs["customer"], Customer):
+            return None, kwargs
+            raise StripeObjectManipulationException("Cards must be manipulated through a Customer. "
+                                                    "Pass a Customer object into this call.")
+
+        customer = kwargs["customer"]
+        del kwargs["customer"]
+
+        return customer, kwargs
+
+    @property
+    def is_default(self):
+        """
+        :return: True if this instance is customer's default_source
+        """
+        if not self.customer:
+            return False
+        return self == self.customer.default_source
+
+    def remove(self):
+        """Removes a source from this customer's account."""
+        deleted = None
+        try:
+            result = self._api_delete()
+            deleted = result.get('deleted', False)
+        except InvalidRequestError as exc:
+            if "No such source:" in str(exc) or "No such customer:" in str(exc):
+                # The exception was thrown because the stripe customer or card was already
+                # deleted on the stripe side, ignore the exception
+                deleted = True
+                pass
+            else:
+                # The exception was raised for another reason, re-raise it
+                six.reraise(*sys.exc_info())
+
+        try:
+            if deleted:
+                self.delete()
+        except SepaSource.DoesNotExist:
+            # The card has already been deleted (potentially during the API call)
+            pass
 
     @property
     def status_info(self, status=None):
-        return StripeSource.STATUS_INFO[status or self.status]
+        return SepaSource.STATUS_INFO[status or self.status]
 
-    objects = SepaSourceManager()
+    @property
+    def last4_display(self):
+        return '%s99 %s0XXXXX%s' % (self.country, self.bank_code, self.last4)
 
     def _attach_objects_hook(self, cls, data):
         customer = data.get('customer')
@@ -1966,28 +1964,21 @@ class SepaSource(StripeSource):
         else:
             raise ValidationError("A customer was not attached to this source.")
 
-    def remove(self):
-        """Removes a source from this customer's account."""
-        try:
-            self._api_delete()
-        except InvalidRequestError as exc:
-            if "No such source:" in str(exc) or "No such customer:" in str(exc):
-                # The exception was thrown because the stripe customer or card was already
-                # deleted on the stripe side, ignore the exception
-                pass
-            else:
-                # The exception was raised for another reason, re-raise it
-                six.reraise(*sys.exc_info())
+    def api_retrieve(self, api_key=None):
+        # OVERRIDING the parent version of this function
+        # Cards must be manipulated through a customer or account.
+        # TODO: When managed accounts are supported, this method needs to check if
+        # either a customer or account is supplied to determine the correct object to use.
+        api_key = api_key or self.default_api_key
+        customer = self.customer.api_retrieve(api_key=api_key)
 
-        try:
-            self.delete()
-        except SepaSource.DoesNotExist:
-            # The source has already been deleted (potentially during the API call)
-            pass
+        # If the customer is deleted, the sources attribute will be absent.
+        # eg. {"id": "cus_XXXXXXXX", "deleted": True}
+        if "sources" not in customer:
+            # We fake a native stripe InvalidRequestError so that it's caught like an invalid ID error.
+            raise InvalidRequestError("No such source: %s" % (self.stripe_id), "id")
 
-    @property
-    def last4_display(self):
-        return '%s99 %s0XXXXX%s' % (self.country, self.bank_code, self.last4)
+        return customer.sources.retrieve(self.stripe_id, expand=self.expand_fields)
 
     @classmethod
     def api_list(cls, api_key=djstripe_settings.STRIPE_SECRET_KEY, **kwargs):
