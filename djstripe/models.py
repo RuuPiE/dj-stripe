@@ -1226,16 +1226,24 @@ class Customer(StripeObject):
 
         return self.has_valid_source() and self.date_purged is None
 
-    def send_invoice(self):
+    def send_invoice(self, tax_percent=None, source=None, **kwargs):
         """
         Pay and send the customer's latest invoice.
-
+        :param: tax_percent: add tax to invoice
+        :param: pay: use this source to pay the invoice
         :returns: True if an invoice was able to be created and paid, False otherwise
                   (typically if there was nothing to invoice).
         """
+        kwargs = kwargs.copy()
+        if tax_percent is not None:
+            kwargs['tax_percent'] = tax_percent
+
         try:
-            invoice = Invoice._api_create(customer=self.stripe_id)
-            invoice.pay()
+            invoice = Invoice._api_create(customer=self.stripe_id, **kwargs)
+            if isinstance(source, PaymentMethod):
+                invoice.pay(source=source.pk)
+            else:
+                invoice.pay()
             return True
         except InvalidRequestError:  # TODO: Check this for a more specific error message.
             return False  # There was nothing to invoice
